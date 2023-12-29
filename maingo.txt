@@ -1,0 +1,181 @@
+package main
+
+import (
+	"fmt"
+	"math"
+	"math/rand"
+	"gonum.org/v1/gonum/floats/scalar"
+	"github.com/mjibson/go-dsp/fft"
+	"gonum.org/v1/gonum/complex128"
+	"gonum.org/v1/gonum/plot"
+	"gonum.org/v1/gonum/plot/plotter"
+)
+
+type LTEChannel struct {
+	ChannelBandwidth float64
+	Frequency        float64
+	TxPower          float64
+	NoiseFloor       float64
+	SNRThreshold     float64
+	NumSubcarriers   int
+}
+
+func (c *LTEChannel) generateBits(numBits int) []int {
+	bits := make([]int, numBits)
+	for i := 0; i < numBits; i++ {
+		bits[i] = rand.Intn(2)
+	}
+	return bits
+}
+
+func (c *LTEChannel) modulateBPSK(bits []int) []complex128.Complex128 {
+	symbols := make([]complex128.Complex128, len(bits))
+	for i, bit := range bits {
+		if bit == 0 {
+			symbols[i] = complex128.Complex128(real(complex(1, 0))), imag(complex(1,) // BPSK modulation for 0
+		} else {
+			symbols[i] = complex128.Complex128(real(complex(-1, 0))), imag(complex(-1, 0))) // BPSK modulation for 1
+		}
+	}
+	return symbols
+}
+
+func (c *LTEChannel) ofdmModulation(symbols []complex128.Complex128) []complex128.Complex128 {
+	// Perform OFDM modulation
+	ofdmSymbols := fft.FFT(symbols)
+	return ofdmSymbols
+}
+
+func (c *LTEChannel) rayleighChannel(signal []complex128.Complex128) []complex128.Complex128 {
+	// Simulate Rayleigh fading channel
+	// The channel gain follows a Rayleigh distribution
+	channelGain := complex(float64(rand.NormFloat64()), float64(rand.NormFloat64()))
+	fadedSignal := scalar.MulC128(channelGain, signal)
+	return fadedSignal
+}
+
+func (c *LTEChannel) awgn(signal []complex128.Complex128, snr float64) []complex128.Complex128 {
+	// Add AWGN noise to the signal
+	noisePower := math.Pow(10, (c.NoiseFloor-snr)/10)
+	noise := make([]complex128.Complex128, len(signal))
+	for i := range noise {
+		noise[i] = complex(float64(rand.NormFloat64()), float64(rand.NormFloat64())) * complex128.Complex128(math.Sqrt(noisePower), 0)
+	}
+	return floats.AddC128(signal, noise)
+}
+
+func (c *LTEChannel) transmitSignal(signal []complex128.Complex128) []complex128.Complex128 {
+	// Simulate transmission over the air
+	modulatedSignal := c.modulateBPSK(signal)
+	ofdmSymbols := c.ofdmModulation(modulatedSignal)
+	fadedSignal := c.rayleighChannel(ofdmSymbols)
+
+	// Here, we simply add AWGN noise to the signal
+	snr := c.TxPower - c.NoiseFloor
+	receivedSignal := c.awgn(fadedSignal, snr)
+	return receivedSignal
+}
+
+func (c *LTEChannel) ofdmDemodulation(receivedSignal []complex128.Complex128) []complex128.Complex128 {
+	// Perform OFDM demodulation
+	demodulatedSymbols := fft.IFFT(receivedSignal)
+	return demodulatedSymbols
+}
+
+func (c *LTEChannel) demodulateBPSK(receivedSignal []complex128.Complex128) []int {
+	bits := make([]int, len(receivedSignal))
+	for i, symbol := range receivedSignal {
+		if real(symbol) >= 0 {
+			bits[i] = 0
+		} else {
+			bits[i] = 1
+		}
+	}
+	return bits
+}
+
+func (c *LTEChannel) runSimulation(numBits int) ([]int, []int) {
+	// Generate random bits
+	bits := c.generateBits(numBits)
+
+	// Simulate the LTE communication channel
+	transmittedSignal := c.modulateBPSK(bits)
+
+	// Transmission
+	receivedSignal := c.transmitSignal(transmittedSignal)
+
+	// Reception
+	demodulatedSymbols := c.ofdmDemodulation(receivedSignal)
+	decodedBits := c.demodulateBPSK(demodulatedSymbols)
+
+	return bits, decodedBits
+}
+
+func plotBits(originalBits, receivedBits []int) {
+	// Create a new plot
+	p, err := plot.New()
+	if err != nil {
+		fmt.Println("Error creating plot:", err)
+		return
+	}
+
+	// Create points for original and received bits
+	originalPoints := make(plotter.XYs, len(originalBits))
+	receivedPoints := make(plotter.XYs, len(receivedBits))
+
+	// Set points for original bits
+	for i, bit := range originalBits {
+		originalPoints[i].X = float64(i)
+		originalPoints[i].Y = float64(bit)
+	}
+
+	// Set points for received bits
+	for i, bit := range receivedBits {
+		receivedPoints[i].X = float64(i)
+		receivedPoints[i].Y = float64(bit)
+	}
+
+	// Create lines for original and received bits
+	originalLine, err := plotter.NewLine(originalPoints)
+	if err != nil {
+		fmt.Println("Error creating line for original bits:", err)
+		return
+	}
+	originalLine.Color = plotutil.Color(0)
+
+	receivedLine, err := plotter.NewLine(receivedPoints)
+	if err != nil {
+		fmt.Println("Error creating line for received bits:", err)
+		return
+	}
+	receivedLine.Color = plotutil.Color(1)
+
+	// Add lines to the plot
+	p.Add(originalLine, receivedLine)
+
+	// Save the plot to a file
+	if err := p.Save(4*vg.Inch, 4*vg.Inch, "bits_plot.png"); err != nil {
+		fmt.Println("Error saving plot:", err)
+	}
+
+	fmt.Println("Plot saved to bits_plot.png")
+}
+
+func main() {
+	// Set a random seed for reproducibility
+	rand.Seed(42)
+
+	// Create LTE channel instance with 64 subcarriers
+	lteChannel := LTEChannel{
+		ChannelBandwidth: 10e6, // 10 MHz
+		Frequency:        2e9,  // 2 GHz
+		TxPower:          20,   // in dBm
+		NoiseFloor:       -90,  // in dBm
+		SNRThreshold:     10,   // in dB
+		NumSubcarriers:   64,
+	}
+
+	// Run simulation
+	numBits := 7
+	transmittedBits, receivedBits := lteChannel.runSimulation(numBits)
+}
